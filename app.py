@@ -7,10 +7,14 @@ import asyncio
 import logging
 import math
 import time
+from dotenv import load_dotenv
+from os import getenv
+from tqdm import tqdm
 
-UPSCALE_FACTOR = 6
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjcxMDY1NzA4NzEwMDk0NDQ3NiIsInNhbHQiOiJSeXdQaUMteE1USVM3YlF5Ym9sS3FRIn0.7MV7xS-ec5ppV2RFW3Cld2ypTnuFvn5zymgn8Tid9U8"
-logging.basicConfig(level=logging.DEBUG)
+load_dotenv()
+UPSCALE_FACTOR = int(getenv("UPSCALE_FACTOR"))
+TOKEN = getenv("TOKEN")
+logging.basicConfig(level=logging.INFO)
 
 def getSize() -> Tuple[int, int]:
     """Get the size of the Pixels canvas"""
@@ -23,10 +27,11 @@ async def getCanvas() -> Image.Image:
     request = requests.get("https://pixels.pythondiscord.com/get_pixels", headers={"Authorization": f"Bearer {TOKEN}"})
     if "cooldown-reset" in request.headers:
         logging.warning("Waiting %ss", request.headers["cooldown-reset"])
-        asyncio.sleep(int(request.headers["cooldown-reset"]))
-        return asyncio.run(getCanvas())
+        for i in tqdm(range(int(request.headers["cooldown-reset"]))):
+            await asyncio.sleep(1)
+        return await getCanvas()
     else:
-        logging.info("%s/%s requests used. This limit will reset in %ss", int(request.headers["requests-limit"]) - int(request.headers["requests-remaining"]), request.headers["requests-limit"], request.headers["requests-reset"])
+        logging.info("%s/%s get canvas requests used. This limit will reset in %ss", int(request.headers["requests-limit"]) - int(request.headers["requests-remaining"]), request.headers["requests-limit"], request.headers["requests-reset"])
     request.raise_for_status()
     size = getSize()
     data = request.content
@@ -39,10 +44,11 @@ async def setPixel(x: int, y: int, color: str):
     logging.debug(request.json())
     if "cooldown-reset" in request.headers:
         logging.warning("Waiting %ss", request.headers["cooldown-reset"])
-        asyncio.sleep(int(request.headers["cooldown-reset"]))
+        for i in tqdm(range(int(request.headers["cooldown-reset"]))):
+            await asyncio.sleep(1)
         return asyncio.run(setPixel(x, y, color))
     else:
-        logging.info("%s/%s requests used. This limit will reset in %ss", int(request.headers["requests-limit"]) - int(request.headers["requests-remaining"]), request.headers["requests-limit"], request.headers["requests-reset"])
+        logging.info("%s/%s set pixel requests used. This limit will reset in %ss", int(request.headers["requests-limit"]) - int(request.headers["requests-remaining"]), request.headers["requests-limit"], request.headers["requests-reset"])
     
 
 def canvasToTk(canvas: Image.Image):
@@ -82,7 +88,7 @@ def updateImage():
     canvas = asyncio.run(getCanvas())
     tkCanvas = canvasToTk(canvas)
     label["image"] = tkCanvas
-    window.after(5000, updateImage)
+    window.after(11000, updateImage)
 
 updateImage()
 window.mainloop()
