@@ -3,13 +3,17 @@ import requests
 from PIL import Image, ImageTk
 import tkinter as tk
 from tkinter.colorchooser import askcolor
-import asyncio
+from tkinter.ttk import Progressbar
 import logging
+import threading
 import math
 import time
 from dotenv import load_dotenv
-from os import getenv
+from os import getenv, write
 from tqdm import tqdm
+
+#Get your API key at https://pixels.pythondiscord.com/authorize
+writeQueue = []
 
 load_dotenv()
 UPSCALE_FACTOR = int(getenv("UPSCALE_FACTOR"))
@@ -19,37 +23,36 @@ logging.basicConfig(level=logging.INFO)
 def getSize() -> Tuple[int, int]:
     """Get the size of the Pixels canvas"""
     request = requests.get("https://pixels.pythondiscord.com/get_size")
+    logging.debug(request.json())
     request.raise_for_status()
     return (request.json()["width"], request.json()["height"])
 
-async def getCanvas() -> Image.Image:
+def getCanvas() -> Image.Image:
     """Get the canvas as a PIL Image"""
     request = requests.get("https://pixels.pythondiscord.com/get_pixels", headers={"Authorization": f"Bearer {TOKEN}"})
-    if "cooldown-reset" in request.headers:
-        logging.warning("Waiting %ss", request.headers["cooldown-reset"])
-        for i in tqdm(range(int(request.headers["cooldown-reset"]))):
-            await asyncio.sleep(1)
-        return await getCanvas()
-    else:
-        logging.info("%s/%s get canvas requests used. This limit will reset in %ss", int(request.headers["requests-limit"]) - int(request.headers["requests-remaining"]), request.headers["requests-limit"], request.headers["requests-reset"])
+    try:
+        if request.json()["message"] == "Endpoint unavailable":
+            logging.info("Get canvas endpoint is currently down.")
+            return Image.new("RGB", (getSize()[0] * UPSCALE_FACTOR, getSize()[1] * UPSCALE_FACTOR)), 10000
+    except:
+        pass
+    request.raise_for_status()
+    logging.info("%s/%s get canvas requests used. This limit will reset in %ss", int(request.headers["requests-limit"]) - int(request.headers["requests-remaining"]), request.headers["requests-limit"], request.headers["requests-reset"])
     request.raise_for_status()
     size = getSize()
     data = request.content
     canvas = Image.frombytes("RGB", size, data)
     return canvas
 
-async def setPixel(x: int, y: int, color: str):
+def setPixel(x: int, y: int, color: str):
     """set a pixel no duh"""
     request = requests.post("https://pixels.pythondiscord.com/set_pixel", headers={"Authorization": f"Bearer {TOKEN}"}, json={"x": x, "y": y, "rgb": color})
     logging.debug(request.json())
-    if "cooldown-reset" in request.headers:
-        logging.warning("Waiting %ss", request.headers["cooldown-reset"])
-        for i in tqdm(range(int(request.headers["cooldown-reset"]))):
-            await asyncio.sleep(1)
-        return asyncio.run(setPixel(x, y, color))
+    logging.info("%s/%s set pixel requests used. This limit will reset in %ss", int(request.headers["requests-limit"]) - int(request.headers["requests-remaining"]), request.headers["requests-limit"], request.headers["requests-reset"])
+    if request.status_code == 200:
+        return True
     else:
-        logging.info("%s/%s set pixel requests used. This limit will reset in %ss", int(request.headers["requests-limit"]) - int(request.headers["requests-remaining"]), request.headers["requests-limit"], request.headers["requests-reset"])
-    
+        return request.status_code
 
 def canvasToTk(canvas: Image.Image):
     """Turn a canvas into Tk compatible"""
@@ -60,11 +63,15 @@ def canvasToTk(canvas: Image.Image):
 
 
 window = tk.Tk()
+window.geometry(f"{getSize()[0] * UPSCALE_FACTOR}x{getSize()[1] * UPSCALE_FACTOR + 10}")
 
-canvas = asyncio.run(getCanvas())
+canvas = getCanvas()
 tkCanvas = canvasToTk(canvas)
 label = tk.Label(image=tkCanvas, background="black")
 
+def addToQueue(x, y, color):
+    global writeQueue
+    writeQueue.append({"x": x, "y": y, "color": color})
 
 def click(event: tk.Event):
     global canvas, tkCanvas
@@ -73,22 +80,64 @@ def click(event: tk.Event):
     imageX = math.floor(x / UPSCALE_FACTOR)
     imageY = math.floor(y / UPSCALE_FACTOR)
     pixelColor = canvas.getpixel((imageX, imageY))
-    logging.info("Click at (%s, %s) on the image, at the color %s", imageX, imageY, pixelColor)
+    logging.debug("Click at (%s, %s) on the image, at the color %s", imageX, imageY, pixelColor)
     newColor = askcolor(pixelColor)
-    asyncio.run(setPixel(imageX, imageY, newColor[1].replace("#", "", 1).upper()))
-    canvas = asyncio.run(getCanvas())
-    tkCanvas = canvasToTk(canvas)
-    label["image"] = tkCanvas
+    logging.info("Requested pixel at coords: (%s, %s), color: %s", x, y, newColor)
+    if newColor == None:
+        return
+    addToQueue(imageX, imageY, newColor[1].replace("#", "", 1).upper())
 
 label.grid(row=0, column=0)
 label.bind("<Button-1>", click)
 
+progressBar = Progressbar()
+progressBar.grid(column=0, row=1)
+
+
+def updateQueueLoop():
+    global canvas, tkCanvas, progressBar, writeQueue
+    for i in writeQueue:
+        timeLeft = requests.head("https://pixels.pythondiscord.com/set_pixel", headers={"Authorization": f"Bearer {TOKEN}"})
+        try:
+            if int(timeLeft.headers["Requests-Remaining"]) > 1:
+                #run the process
+                success = setPixel(i["x"], i["y"], i["color"])
+                if success == True:
+                    writeQueue.remove(i)
+                else:
+                    logging.warn("Set Pixel request x: %s, y: %s, color: %s, failed.", i["x"], i["y"], i["color"])
+            else:
+                break
+        except:
+            pass
+    window.after(1000, updateQueueLoop)
+
+
+
+
 def updateImage():
     global canvas, tkCanvas
-    canvas = asyncio.run(getCanvas())
+    canvas = getCanvas()
     tkCanvas = canvasToTk(canvas)
     label["image"] = tkCanvas
-    window.after(11000, updateImage)
 
-updateImage()
+
+
+def updateImageLoop():
+    timeLeft = requests.head("https://pixels.pythondiscord.com/get_pixels", headers={"Authorization": f"Bearer {TOKEN}"})
+    try:
+        if timeLeft.headers["requests-reset"] == 0 and int(timeLeft.headers["requests-remaining"]) < 3:
+            #run the process
+            try:
+                updateImage()
+            except:
+                logging.warn("Get Pixels request failed.")
+
+    except:
+        pass
+    window.after(1000, updateImageLoop)
+
+updateQueueLoop()
+updateImageLoop()
+
 window.mainloop()
