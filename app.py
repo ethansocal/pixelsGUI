@@ -96,20 +96,23 @@ progressBar.grid(column=0, row=1)
 
 def updateQueueLoop():
     global canvas, tkCanvas, progressBar, writeQueue
-    for i in writeQueue:
-        timeLeft = requests.head("https://pixels.pythondiscord.com/set_pixel", headers={"Authorization": f"Bearer {TOKEN}"})
-        try:
-            if int(timeLeft.headers["Requests-Remaining"]) > 1:
-                #run the process
-                success = setPixel(i["x"], i["y"], i["color"])
-                if success == True:
-                    writeQueue.remove(i)
+    try:
+        for i in writeQueue:
+            timeLeft = requests.head("https://pixels.pythondiscord.com/set_pixel", headers={"Authorization": f"Bearer {TOKEN}"})
+            try:
+                if int(timeLeft.headers["Requests-Remaining"]) > 1:
+                    #run the process
+                    success = setPixel(i["x"], i["y"], i["color"])
+                    if success == True:
+                        writeQueue.remove(i)
+                    else:
+                        logging.warn("Set Pixel request x: %s, y: %s, color: %s, failed.", i["x"], i["y"], i["color"])
                 else:
-                    logging.warn("Set Pixel request x: %s, y: %s, color: %s, failed.", i["x"], i["y"], i["color"])
-            else:
-                break
-        except:
-            pass
+                    break
+            except:
+                pass
+    except:
+        pass
     window.after(1000, updateQueueLoop)
 
 
@@ -126,13 +129,12 @@ def updateImage():
 def updateImageLoop():
     timeLeft = requests.head("https://pixels.pythondiscord.com/get_pixels", headers={"Authorization": f"Bearer {TOKEN}"})
     try:
-        if timeLeft.headers["requests-reset"] == 0 and int(timeLeft.headers["requests-remaining"]) < 3:
+        if float(timeLeft.headers["requests-reset"]) == 0:
             #run the process
             try:
                 updateImage()
             except:
                 logging.warn("Get Pixels request failed.")
-
     except:
         pass
     window.after(1000, updateImageLoop)
